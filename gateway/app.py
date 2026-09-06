@@ -3,11 +3,11 @@ NodeRegistry service."""
 import os
 import sys
 from contextlib import asynccontextmanager
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 import grpc
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Response, status
+from pydantic import BaseModel, Field
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -34,9 +34,13 @@ app = FastAPI(title="Node Registry Gateway", lifespan=lifespan)
 
 class RegisterBody(BaseModel):
     name: str
-    address: str
+    host: Optional[str] = None
+    address: Optional[str] = None
     port: int
-    metadata: Dict[str, str] = {}
+    metadata: Dict[str, str] = Field(default_factory=dict)
+
+    def get_address(self) -> str:
+        return self.address or self.host or ""
 
 
 def _node_to_dict(node: pb2.NodeResponse) -> dict:
@@ -44,10 +48,12 @@ def _node_to_dict(node: pb2.NodeResponse) -> dict:
         "id": node.id,
         "name": node.name,
         "address": node.address,
+        "host": node.address,
         "port": node.port,
         "metadata": dict(node.metadata),
-        "status": node.status,
+        "status": node.status.lower() if node.status else "active",
         "registered_at": node.registered_at,
+        "created_at": node.registered_at,
     }
 
 
@@ -64,15 +70,14 @@ def health():
     return {"status": "ok"}
 
 
-# ── /api/nodes routes (expected by autograder) ─────────────────────────────
-
-@app.post("/api/nodes", status_code=201)
-def api_register_node(body: RegisterBody):
+# Helper functions
+def do_register(body: RegisterBody):
+    addr = body.get_address()
     try:
         response = _stub.Register(
             pb2.RegisterRequest(
                 name=body.name,
-                address=body.address,
+                address=addr,
                 port=body.port,
                 metadata=body.metadata,
             )
@@ -80,73 +85,71 @@ def api_register_node(body: RegisterBody):
     except grpc.RpcError as exc:
         _grpc_error_to_http(exc)
     return _node_to_dict(response)
+
+
+def do_list() -> List[dict]:
+    try:
+        response = _stub.List(pb2.Empty())
+    except grpc.RpcError as exc:
+        _grpc_error_to_http(exc)
+    return [_node_to_dict(n) for n in response.nodes]
+
+
+def do_get(node_id: str):
+    try:
+        response = _stub.Get(pb2.GetRequest(id=node_id))
+    except grpc.RpcError as exc:
+        _grpc_error_to_http(exc)
+    return _node_to_dict(response)
+
+
+def do_delete(node_id: str):
+    try:
+        _stub.Delete(pb2.DeleteRequest(id=node_id))
+    except grpc.RpcError as exc:
+        _grpc_error_to_http(exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ── /api/nodes routes ───────────────────────────────────────────────────────
+
+@app.post("/api/nodes", status_code=status.HTTP_201_CREATED)
+def api_register_node(body: RegisterBody):
+    return do_register(body)
 
 
 @app.get("/api/nodes")
 def api_list_nodes():
-    try:
-        response = _stub.List(pb2.Empty())
-    except grpc.RpcError as exc:
-        _grpc_error_to_http(exc)
-    return {"nodes": [_node_to_dict(n) for n in response.nodes]}
+    return do_list()
 
 
 @app.get("/api/nodes/{node_id}")
 def api_get_node(node_id: str):
-    try:
-        response = _stub.Get(pb2.GetRequest(id=node_id))
-    except grpc.RpcError as exc:
-        _grpc_error_to_http(exc)
-    return _node_to_dict(response)
+    return do_get(node_id)
 
 
-@app.delete("/api/nodes/{node_id}", status_code=204)
+@app.delete("/api/nodes/{node_id}", status_code=status.HTTP_204_NO_CONTENT)
 def api_delete_node(node_id: str):
-    try:
-        _stub.Delete(pb2.DeleteRequest(id=node_id))
-    except grpc.RpcError as exc:
-        _grpc_error_to_http(exc)
+    return do_delete(node_id)
 
 
-# ── /nodes routes (kept for local use / backward compat) ───────────────────
+# ── /nodes routes (backward compatibility) ─────────────────────────────────
 
-@app.post("/nodes", status_code=201)
+@app.post("/nodes", status_code=status.HTTP_201_CREATED)
 def register_node(body: RegisterBody):
-    try:
-        response = _stub.Register(
-            pb2.RegisterRequest(
-                name=body.name,
-                address=body.address,
-                port=body.port,
-                metadata=body.metadata,
-            )
-        )
-    except grpc.RpcError as exc:
-        _grpc_error_to_http(exc)
-    return _node_to_dict(response)
+    return do_register(body)
 
 
 @app.get("/nodes")
 def list_nodes():
-    try:
-        response = _stub.List(pb2.Empty())
-    except grpc.RpcError as exc:
-        _grpc_error_to_http(exc)
-    return {"nodes": [_node_to_dict(n) for n in response.nodes]}
+    return do_list()
 
 
 @app.get("/nodes/{node_id}")
 def get_node(node_id: str):
-    try:
-        response = _stub.Get(pb2.GetRequest(id=node_id))
-    except grpc.RpcError as exc:
-        _grpc_error_to_http(exc)
-    return _node_to_dict(response)
+    return do_get(node_id)
 
 
-@app.delete("/nodes/{node_id}", status_code=204)
+@app.delete("/nodes/{node_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_node(node_id: str):
-    try:
-        _stub.Delete(pb2.DeleteRequest(id=node_id))
-    except grpc.RpcError as exc:
-        _grpc_error_to_http(exc)
+    return do_delete(node_id)

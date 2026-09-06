@@ -8,6 +8,7 @@ from concurrent import futures
 import grpc
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 from grpc_reflection.v1alpha import reflection
+from sqlalchemy import or_
 
 # Make the repo root importable so the generated *_pb2 modules (which live
 # at the repo root, per the Makefile's --python_out=.) can be found both
@@ -27,7 +28,7 @@ GRPC_PORT = os.environ.get("GRPC_PORT", "50051")
 
 def _node_to_response(node: Node) -> pb2.NodeResponse:
     return pb2.NodeResponse(
-        id=node.id,
+        id=str(node.id),
         name=node.name,
         address=node.address,
         port=node.port,
@@ -67,7 +68,9 @@ class NodeRegistryServicer(pb2_grpc.NodeRegistryServicer):
     def Get(self, request, context):
         db = SessionLocal()
         try:
-            node = db.query(Node).filter(Node.id == request.id).first()
+            node = db.query(Node).filter(
+                or_(Node.id == request.id, Node.name == request.id)
+            ).first()
             if node is None:
                 context.set_code(grpc.StatusCode.NOT_FOUND)
                 context.set_details(f"Node {request.id} not found")
@@ -79,7 +82,9 @@ class NodeRegistryServicer(pb2_grpc.NodeRegistryServicer):
     def Delete(self, request, context):
         db = SessionLocal()
         try:
-            node = db.query(Node).filter(Node.id == request.id).first()
+            node = db.query(Node).filter(
+                or_(Node.id == request.id, Node.name == request.id)
+            ).first()
             if node is None:
                 context.set_code(grpc.StatusCode.NOT_FOUND)
                 context.set_details(f"Node {request.id} not found")
